@@ -458,15 +458,16 @@ export async function createPiSession(
 	overrideWorkspace?: string,
 ): Promise<PiSessionHandle> {
 	const workspace = overrideWorkspace ?? config.workspace;
-	return createPiSessionHandle(
+	const sessionManager = createSessionManager(
 		config,
 		workspace,
-		createSessionManager(
-			config,
-			workspace,
-			overrideSessionPath,
-			overrideWorkspace !== undefined,
-		),
+		overrideSessionPath,
+		overrideWorkspace !== undefined,
+	);
+	return createPiSessionHandle(
+		config,
+		sessionManager.getCwd(),
+		sessionManager,
 	);
 }
 
@@ -533,6 +534,14 @@ async function createPiSessionHandle(
 			},
 		});
 		const modelRegistry = new ModelRegistry(services.modelRuntime);
+		const hasExistingSession =
+			sessionStartEvent?.reason !== "new" &&
+			Boolean(runtimeSessionManager.getSessionFile?.());
+		if (hasExistingSession) {
+			// Native extension providers refresh asynchronously. Settle availability before
+			// the SDK reads its synchronous auth/model snapshot for saved-model restoration.
+			await services.modelRuntime.getAvailable();
+		}
 		const configuredModel = resolveModelOverride(
 			modelRegistry,
 			config.piModel,
@@ -541,9 +550,6 @@ async function createPiSessionHandle(
 			services.settingsManager,
 			modelRegistry,
 		);
-		const hasExistingSession =
-			sessionStartEvent?.reason !== "new" &&
-			Boolean(runtimeSessionManager.getSessionFile?.());
 		const { model, thinkingLevel } = resolveInitialScopedModelSelection({
 			configuredModel,
 			scopedModels,

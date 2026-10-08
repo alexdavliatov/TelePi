@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import {
+import { vi } from "vitest";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import registerHandoff, {
   getInstalledConfigPath,
   getInstalledLaunchAgentPath,
   getInstalledSystemdServicePath,
@@ -42,6 +44,61 @@ describe("handoff extension helpers", () => {
     rmSync(tempDir, { recursive: true, force: true });
     process.env = originalEnv;
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it.each(["direct", "launchd", "systemd"] as const)("awaits successful %s launch before CLI shutdown", async (mode) => {
+    process.env.TELEPI_HANDOFF_MODE = mode;
+    process.env.TELEPI_DIR = path.join(tempDir, "source");
+    const sessionFile = path.join(tempDir, "synthetic-session.jsonl");
+    writeFileSync(sessionFile, "synthetic persisted history\n");
+    const order: string[] = [];
+    let finishLaunch!: () => void;
+    const gate = new Promise<void>((resolve) => { finishLaunch = resolve; });
+    let handler!: Parameters<ExtensionAPI["registerCommand"]>[1]["handler"];
+    const exec = vi.fn(async (_command: string, args: string[]) => {
+      const script = args[1]!;
+      if (script.includes("command -v telepi")) return { code: 1, stdout: "", stderr: "", killed: false };
+      if (script.includes("pkill")) return { code: 0, stdout: "", stderr: "", killed: false };
+      order.push("launch-start");
+      await gate;
+      order.push("launch-finished");
+      return { code: 0, stdout: "12345\n", stderr: "", killed: false };
+    });
+    registerHandoff({ exec, registerCommand: (_name, command) => { handler = command.handler; } } as unknown as ExtensionAPI);
+    const shutdown = vi.fn(() => { order.push("shutdown"); });
+    const pending = handler("", { sessionManager: { getSessionFile: () => sessionFile }, ui: { notify: vi.fn() }, shutdown } as any);
+    try {
+      await vi.waitFor(() => expect(order).toEqual(["launch-start"]));
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(exec.mock.calls.at(-1)![1][1]).toContain(sessionFile);
+    } finally {
+      finishLaunch();
+      await pending;
+    }
+    expect(order).toEqual(["launch-start", "launch-finished", "shutdown"]);
+    expect(shutdown).toHaveBeenCalledOnce();
+  });
+
+  it.each(["direct", "launchd", "systemd"] as const)("keeps CLI alive after failed %s launch", async (mode) => {
+    process.env.TELEPI_HANDOFF_MODE = mode;
+    process.env.TELEPI_DIR = path.join(tempDir, "source");
+    const sessionFile = path.join(tempDir, "synthetic-session.jsonl");
+    writeFileSync(sessionFile, "synthetic persisted history\n");
+    for (const failure of ["nonzero", "throw"] as const) {
+      let handler!: Parameters<ExtensionAPI["registerCommand"]>[1]["handler"];
+      const exec = vi.fn(async (_command: string, args: string[]) => {
+        if (args[1]!.includes("command -v telepi")) return { code: 1, stdout: "", stderr: "", killed: false };
+        if (args[1]!.includes("pkill")) return { code: 0, stdout: "", stderr: "", killed: false };
+        if (failure === "throw") throw new Error("Synthetic launch failure");
+        return { code: 1, stdout: "", stderr: "Synthetic launch failure", killed: false };
+      });
+      registerHandoff({ exec, registerCommand: (_name, command) => { handler = command.handler; } } as unknown as ExtensionAPI);
+      const shutdown = vi.fn();
+      const notify = vi.fn();
+      await handler("", { sessionManager: { getSessionFile: () => sessionFile }, ui: { notify }, shutdown } as any);
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenLastCalledWith(expect.any(String), "warning");
+    }
   });
 
   // --- macOS / launchd tests ---
