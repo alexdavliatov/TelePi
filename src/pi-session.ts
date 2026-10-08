@@ -15,6 +15,7 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	createBashToolDefinition,
 	createCodingTools,
 	getAgentDir,
 	ModelRegistry,
@@ -26,6 +27,7 @@ import {
 	type SessionStats,
 	SettingsManager,
 	type SlashCommandInfo,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 import type { TelePiConfig } from "./config.js";
@@ -142,20 +144,6 @@ interface PiSessionHandle {
 	getSlashCommands: () => SlashCommandInfo[];
 	dispose: () => Promise<void>;
 }
-
-/**
- * Patch the bash tool on a live session to enforce a default timeout and guard
- * against TelePi restarting or managing its own launchd service.
- *
- * The Pi SDK bash tool has no default timeout — if the LLM omits `timeout`,
- * commands run indefinitely. In TelePi's headless context this causes hangs
- * on interactive commands (e.g. `pi models` launches a TUI).
- *
- * We can't override the tool via `createAgentSession({ tools })` because the
- * SDK only reads tool names from that option and rebuilds implementations
- * internally. Instead, we patch the live tool on `session.agent.state` after creation.
- */
-type BashToolArgs = { command: string; timeout?: number };
 
 function splitShellCommandSegments(command: string): string[] {
 	const segments: string[] = [];
@@ -388,34 +376,21 @@ function getBlockedBashCommandReason(command: string): string | undefined {
 	return undefined;
 }
 
-function patchBashTimeout(session: AgentSession): void {
-	const tools = session.agent.state.tools;
-	const patched = tools.map((tool) => {
-		if (tool.name !== "bash") return tool;
-
-		const originalExecute = tool.execute;
-		const execute: typeof originalExecute = (
-			toolCallId,
-			params,
-			signal,
-			onUpdate,
-		) =>
-			originalExecute(
-				toolCallId,
-				withDefaultBashTimeout(params),
-				signal,
-				onUpdate,
-			);
-
-		return {
-			...tool,
-			description:
-				tool.description +
-				` Commands time out after ${DEFAULT_BASH_TIMEOUT_SECONDS} seconds by default. Pass a longer timeout for slow commands (e.g. npm install, test suites).`,
-			execute,
-		};
+/** Register a guarded SDK definition so loadout refreshes retain the headless timeout. */
+function createGuardedBashTool(cwd: string, settingsManager: SettingsManager) {
+	const tool = createBashToolDefinition(cwd, {
+		shellPath: settingsManager.getShellPath(),
+		commandPrefix: settingsManager.getShellCommandPrefix(),
 	});
-	session.agent.state.tools = patched;
+	const execute: typeof tool.execute = (toolCallId, params, signal, onUpdate, ctx) =>
+		tool.execute(toolCallId, withDefaultBashTimeout(params), signal, onUpdate, ctx);
+	return {
+		...tool,
+		description:
+			tool.description +
+			` Commands time out after ${DEFAULT_BASH_TIMEOUT_SECONDS} seconds by default. Pass a longer timeout for slow commands (e.g. npm install, test suites).`,
+		execute,
+	};
 }
 
 function withDefaultBashTimeout<T>(params: T): T {
@@ -585,11 +560,12 @@ async function createPiSessionHandle(
 			model,
 			thinkingLevel,
 			scopedModels,
+			// The SDK collection erases individual schema/render types, not their runtime metadata.
+			customTools: [createGuardedBashTool(cwd, services.settingsManager) as ToolDefinition],
 		});
 		ensureBuiltInToolActivation(result.session, desiredBuiltInToolNames);
 		getSlashCommands = () =>
 			result.extensionsResult.runtime.getCommands?.() ?? [];
-		patchBashTimeout(result.session);
 
 		return {
 			...result,
@@ -1572,8 +1548,7 @@ async function applySessionSetup(
 	}
 
 	await setup(session.sessionManager);
-	session.agent.state.messages =
-		session.sessionManager.buildSessionContext().messages;
+	session.refreshContext();
 }
 
 function collectSettingsDiagnostics(

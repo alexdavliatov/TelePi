@@ -1,17 +1,39 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
 import packageJson from "../package.json" with { type: "json" };
+import { createSdkFixture } from "./fixtures/pi-sdk-1-1-0.js";
 
 describe("Pi SDK compatibility", () => {
   it("tracks the current Earendil Pi SDK release", () => {
     expect(packageJson.engines.node).toBe(">=22.19.0");
-    expect(packageJson.dependencies["@earendil-works/pi-agent-core"]).toBe("^0.86.1");
-    expect(packageJson.dependencies["@earendil-works/pi-ai"]).toBe("^0.86.1");
-    expect(packageJson.dependencies["@earendil-works/pi-coding-agent"]).toBe("^0.86.1");
+    const packages = ["pi-agent-core", "pi-ai", "pi-coding-agent"] as const;
+    const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+    for (const name of packages) {
+      const fullName = `@earendil-works/${name}` as keyof typeof packageJson.dependencies;
+      expect(packageJson.dependencies[fullName]).toBe("1.1.0");
+      expect(lock.packages[""].dependencies[fullName]).toBe("1.1.0");
+      const occurrences = Object.entries(lock.packages).filter(([key]) => key.endsWith(`node_modules/${fullName}`));
+      expect(occurrences).toHaveLength(1);
+      for (const [, metadata] of occurrences) expect((metadata as { version: string }).version).toBe("1.1.0");
+      // Vitest's import.meta shim has no resolve; resolve under native Node's ESM conditions.
+      const entrypoint = execFileSync(process.execPath, ["--input-type=module", "-e",
+        "console.log(import.meta.resolve(process.argv[1]))", fullName,
+      ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" }).trim();
+      let directory = path.dirname(fileURLToPath(entrypoint));
+      while (!existsSync(path.join(directory, "package.json"))) {
+        const parent = path.dirname(directory);
+        if (parent === directory) throw new Error(`No installed metadata for ${fullName}`);
+        directory = parent;
+      }
+      const installed = JSON.parse(readFileSync(path.join(directory, "package.json"), "utf8"));
+      expect(installed.name).toBe(fullName);
+      expect(installed.version).toBe("1.1.0");
+    }
     expect(packageJson.dependencies.undici).toBe("8.10.2");
   });
 
@@ -27,32 +49,32 @@ describe("Pi SDK compatibility", () => {
   });
 
   it("loads external extensions that import Earendil Pi packages", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "telepi-pi-extension-"));
-    const extensionPath = path.join(root, "extension.ts");
-
-    writeFileSync(
-      extensionPath,
-      [
-        'import { DefaultResourceLoader, type ExtensionAPI } from "@earendil-works/pi-coding-agent";',
-        'import { Container } from "@earendil-works/pi-tui";',
-        'import { uuidv7 as aiUuidv7 } from "@earendil-works/pi-ai";',
-        'import { uuidv7 as agentUuidv7 } from "@earendil-works/pi-agent-core";',
-        "",
-        "export default function extension(pi: ExtensionAPI): void {",
-        "  const runtimeImports = [DefaultResourceLoader, Container, aiUuidv7, agentUuidv7];",
-        "  pi.registerCommand(\"telepi-sdk-check\", {",
-        "    description: `loaded:${runtimeImports.every(Boolean)}` ,",
-        "    handler: async () => {},",
-        "  });",
-        "}",
-        "",
-      ].join("\n"),
-    );
+    const fixture = createSdkFixture();
+    const extensionPath = path.join(fixture.root, "extension.ts");
 
     try {
+      writeFileSync(
+        extensionPath,
+        [
+          'import { DefaultResourceLoader, type ExtensionAPI } from "@earendil-works/pi-coding-agent";',
+          'import { Container } from "@earendil-works/pi-tui";',
+          'import { uuidv7 as aiUuidv7 } from "@earendil-works/pi-ai";',
+          'import { Agent } from "@earendil-works/pi-agent-core";',
+          "",
+          "export default function extension(pi: ExtensionAPI): void {",
+          "  const runtimeImports = [DefaultResourceLoader, Container, aiUuidv7, Agent];",
+          "  pi.registerCommand(\"telepi-sdk-check\", {",
+          "    description: `loaded:${runtimeImports.every(Boolean)}`,",
+          "    handler: async () => {},",
+          "  });",
+          "}",
+          "",
+        ].join("\n"),
+      );
+
       const loader = new DefaultResourceLoader({
-        cwd: root,
-        agentDir: path.join(root, "agent"),
+        cwd: fixture.workspace,
+        agentDir: fixture.agentDir,
         additionalExtensionPaths: [extensionPath],
         noSkills: true,
         noPromptTemplates: true,
@@ -64,10 +86,16 @@ describe("Pi SDK compatibility", () => {
       const result = loader.getExtensions();
 
       expect(result.errors).toEqual([]);
-      expect(result.extensions).toHaveLength(1);
-      expect(result.extensions[0]?.commands.has("telepi-sdk-check")).toBe(true);
+      expect(result.extensions).toHaveLength(3);
+      const extension = result.extensions.find((item) => item.commands.has("telepi-sdk-check"));
+      expect(extension).toBeDefined();
+      expect(extension?.commands.has("telepi-sdk-check")).toBe(true);
+      expect(extension?.commands.get("telepi-sdk-check")?.description).toBe("loaded:true");
+      expect(fixture.faux.models.map((model) => model.id)).toEqual(["saved", "override"]);
+      expect(fixture.fetchSpy).not.toHaveBeenCalled();
+      expect(fixture.networkSpy).not.toHaveBeenCalled();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      await fixture.cleanup();
     }
   });
 });

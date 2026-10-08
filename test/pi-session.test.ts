@@ -115,7 +115,8 @@ const mockState = vi.hoisted(() => {
 	const createSession = (options: Record<string, unknown> = {}) => {
 		sessionCounter += 1;
 
-		const bashExecute = vi.fn();
+		const customBash = (options.customTools as any[] | undefined)?.find((tool) => tool.name === "bash");
+		const bashExecute = customBash?.originalExecute ?? vi.fn();
 		const sessionManager =
 			(options.sessionManager as any) ??
 			createSessionManagerInstance(
@@ -144,7 +145,7 @@ const mockState = vi.hoisted(() => {
 					messages: [],
 					tools: [
 						{ name: "read", description: "Read files", execute: vi.fn() },
-						{
+						customBash ?? {
 							name: "bash",
 							description: "Execute bash",
 							execute: bashExecute,
@@ -156,6 +157,7 @@ const mockState = vi.hoisted(() => {
 					],
 				},
 			},
+			refreshContext: vi.fn(),
 			prompt: vi.fn().mockResolvedValue(undefined),
 			bindExtensions: vi.fn().mockResolvedValue(undefined),
 			abort: vi.fn().mockResolvedValue(undefined),
@@ -229,6 +231,7 @@ const mockState = vi.hoisted(() => {
 					model: options.model,
 					thinkingLevel: options.thinkingLevel,
 					scopedModels: options.scopedModels,
+					customTools: options.customTools,
 					sessionManager: options.sessionManager,
 					sessionFile: options.sessionManager?.getSessionFile?.(),
 					activeToolNames,
@@ -249,7 +252,11 @@ const mockState = vi.hoisted(() => {
 			agentDir: options.agentDir ?? "/mock-agent",
 			modelRuntime:
 				options.modelRuntime ?? { kind: "model-runtime", cwd: options.cwd },
-			settingsManager: options.settingsManager,
+			settingsManager: {
+				getShellPath: vi.fn().mockReturnValue("/synthetic-shell"),
+				getShellCommandPrefix: vi.fn().mockReturnValue("echo synthetic-prefix;"),
+				...options.settingsManager,
+			},
 			resourceLoader: { kind: "resource-loader", cwd: options.cwd },
 			diagnostics: [],
 		}));
@@ -381,6 +388,13 @@ const mockState = vi.hoisted(() => {
 			return runtime;
 		});
 
+	const createBashToolDefinition = vi.fn().mockImplementation(() => {
+		const execute = vi.fn();
+		return { name: "bash", label: "bash", description: "Execute bash", parameters: {},
+			outputSchema: { type: "object" }, promptSnippet: "Execute bash commands", renderCall: vi.fn(),
+			execute, originalExecute: execute };
+	});
+
 	const createCodingTools = vi
 		.fn()
 		.mockReturnValue([{ name: "mock-tool", description: "Mock tool" }]);
@@ -464,6 +478,7 @@ const mockState = vi.hoisted(() => {
 		createAgentSessionRuntime,
 		createAgentSessionServices,
 		createCodingTools,
+		createBashToolDefinition,
 		AuthStorage,
 		ModelRegistry,
 		ModelRuntime,
@@ -494,6 +509,7 @@ const mockState = vi.hoisted(() => {
 			createAgentSessionRuntime.mockClear();
 			createAgentSessionServices.mockClear();
 			createCodingTools.mockClear();
+			createBashToolDefinition.mockClear();
 			AuthStorage.create.mockClear();
 			ModelRegistry.mockClear();
 			ModelRuntime.create.mockClear();
@@ -535,6 +551,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 	createAgentSessionRuntime: mockState.createAgentSessionRuntime,
 	createAgentSessionServices: mockState.createAgentSessionServices,
 	createCodingTools: mockState.createCodingTools,
+	createBashToolDefinition: mockState.createBashToolDefinition,
 	AuthStorage: mockState.AuthStorage,
 	ModelRegistry: mockState.ModelRegistry,
 	ModelRuntime: mockState.ModelRuntime,
@@ -585,7 +602,7 @@ describe("PiSessionService", () => {
 		mockState.reset();
 	});
 
-	const getPatchedBashTool = (session: any) =>
+	const getGuardedBashTool = (session: any) =>
 		session.agent.state.tools.find((tool: any) => tool.name === "bash");
 
 	it("creates a session service and initializes the Pi session runtime", async () => {
@@ -642,7 +659,7 @@ describe("PiSessionService", () => {
 		});
 	});
 
-	it("activates coding built-ins after session creation without disabling extension/custom tools on pi 0.70.x", async () => {
+	it("activates coding built-ins after session creation without disabling extension/custom tools on Pi 1.1.0", async () => {
 		mockState.createCodingTools.mockReturnValueOnce([
 			{ name: "read", description: "Read files" },
 			{ name: "bash", description: "Execute bash" },
@@ -771,7 +788,7 @@ describe("PiSessionService", () => {
 		});
 	});
 
-	it("patches the live bash tool via agent state mutation", async () => {
+	it("registers persistent guarded bash through the SDK customTools option", async () => {
 		await PiSessionService.create(createConfig());
 		const currentSession = mockState.createdSessions[0]?.session;
 		const originalExecute = mockState.createdSessions[0]?.options?.bashExecute;
@@ -779,18 +796,30 @@ describe("PiSessionService", () => {
 			(tool: any) => tool.name === "bash",
 		);
 
+		expect(mockState.createAgentSession.mock.calls[0]?.[0].customTools).toEqual([bashTool]);
 		expect(bashTool.description).toContain(
 			"Commands time out after 120 seconds by default.",
 		);
 		expect(bashTool.execute).not.toBe(originalExecute);
 
-		await bashTool.execute("tool-1", { command: "pwd" });
+		expect(mockState.createBashToolDefinition).toHaveBeenCalledWith("/workspace/base", {
+			shellPath: "/synthetic-shell", commandPrefix: "echo synthetic-prefix;",
+		});
+		const original = mockState.createBashToolDefinition.mock.results[0]?.value;
+		for (const key of ["parameters", "outputSchema", "promptSnippet", "renderCall"]) {
+			expect(bashTool[key]).toBe(original[key]);
+		}
+		const signal = new AbortController().signal;
+		const update = vi.fn();
+		const context = { cwd: "/workspace/base" };
+		await bashTool.execute("tool-1", { command: "pwd" }, signal, update, context);
+		await bashTool.execute("tool-2", { command: "pwd", timeout: 9 }, signal, update, context);
 
-		expect(originalExecute).toHaveBeenCalledWith(
-			"tool-1",
-			{ command: "pwd", timeout: 120 },
-			undefined,
-			undefined,
+		expect(originalExecute).toHaveBeenNthCalledWith(1,
+			"tool-1", { command: "pwd", timeout: 120 }, signal, update, context,
+		);
+		expect(originalExecute).toHaveBeenNthCalledWith(2,
+			"tool-2", { command: "pwd", timeout: 9 }, signal, update, context,
 		);
 	});
 
@@ -798,7 +827,7 @@ describe("PiSessionService", () => {
 		await PiSessionService.create(createConfig());
 		const currentSession = mockState.createdSessions[0]?.session;
 		const originalBashTool = mockState.createdSessions[0]?.options?.bashExecute;
-		const patchedBashTool = getPatchedBashTool(currentSession);
+		const guardedBashTool = getGuardedBashTool(currentSession);
 
 		const blockedCommands = [
 			"launchctl kickstart -k gui/$UID/com.telepi",
@@ -810,7 +839,7 @@ describe("PiSessionService", () => {
 
 		for (const [index, command] of blockedCommands.entries()) {
 			expect(() =>
-				patchedBashTool.execute(`tool-${index + 1}`, { command }),
+				guardedBashTool.execute(`tool-${index + 1}`, { command }),
 			).toThrow(
 				"Blocked TelePi self-management command. launchctl commands targeting com.telepi cannot run from inside a TelePi session.",
 			);
@@ -1119,6 +1148,19 @@ describe("PiSessionService", () => {
 			model: undefined,
 		});
 		expect(() => service.getSession()).toThrow("Pi session is not initialized");
+	});
+
+	it("awaits cross-workspace setup before refreshing context once", async () => {
+		const service = await PiSessionService.create(createConfig());
+		let finished = false;
+		await service.newSession({ workspace: "/workspace/other", setup: async () => {
+			await Promise.resolve();
+			expect(mockState.createdSessions[1]?.session.refreshContext).not.toHaveBeenCalled();
+			finished = true;
+		} });
+		expect(finished).toBe(true);
+		expect(mockState.createdSessions[1]?.session.refreshContext).toHaveBeenCalledTimes(1);
+		expect(mockState.createdSessions[0]?.session.refreshContext).not.toHaveBeenCalled();
 	});
 
 	it("disposes the created runtime when cross-workspace setup fails", async () => {
