@@ -5,12 +5,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/benedict2310/TelePi.git"
+    "url": "git+https://github.com/alexdavliatov/TelePi.git"
   },
   "bugs": {
-    "url": "https://github.com/benedict2310/TelePi/issues"
+    "url": "https://github.com/alexdavliatov/TelePi/issues"
   },
-  "homepage": "https://github.com/benedict2310/TelePi#readme",
+  "homepage": "https://github.com/alexdavliatov/TelePi#readme",
   "keywords": [
     "telegram",
     "bot",

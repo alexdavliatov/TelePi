@@ -2,11 +2,13 @@
 
 **Run your Pi coding agent from Telegram: voice prompts, screenshots, session handoff, and terminal handback.**
 
-TelePi is a Telegram bridge for the [Pi coding agent](https://github.com/badlogic/pi-mono). It runs locally on your machine, opens real Pi sessions in your repositories, lets you continue from your phone, and hands the exact same session back to the terminal when you return.
+TelePi is a Telegram bridge for the [Pi coding agent](https://github.com/badlogic/pi-mono). It runs locally on your machine, opens Pi sessions in your repositories, lets you continue from your phone, and hands persisted session history back to the terminal when you return.
+
+This is the public [alexdavliatov/TelePi fork](https://github.com/alexdavliatov/TelePi/tree/feat/pi-1.1.0) of [upstream TelePi](https://github.com/benedict2310/TelePi), targeting Pi SDK **1.1.0** on branch `feat/pi-1.1.0`. The TelePi package version remains **0.4.2**; 1.1.0 is the SDK version, not a TelePi release. The upstream MIT license and Benedict Bleimschein attribution are preserved in [LICENSE](LICENSE).
 
 **Who this is for:** developers already using Pi who want a safe mobile control surface for coding-agent work: reply from the train, send a screenshot, dictate a prompt, watch progress, then resume in the CLI without losing context.
 
-Early open-source release: **80+ stars, 13 forks, and hundreds of npm downloads**. Current npm release: `@futurelab-studio/telepi` **v0.4.2**, with macOS `launchd`, Linux `systemd --user`, image prompts, prompt inbox, local/cloud voice transcription, and Pi command bridging. Read the [Futurelab TelePi deep dive](https://futurelab.studio/blog/telepi-telegram-remote-control-for-pi/) for the longer story.
+The upstream npm package is not this fork. Install this SDK 1.1.0 fork from source below, not from `@futurelab-studio/telepi` on npm. For upstream background, read the [Futurelab TelePi deep dive](https://futurelab.studio/blog/telepi-telegram-remote-control-for-pi/).
 
 > **Demo placeholder:** GIF coming soon. The core loop is: Pi CLI `/handoff` → Telegram text/voice/image prompt → `/handback` → resume the same Pi session in your terminal.
 
@@ -19,15 +21,18 @@ You need:
 - Your numeric Telegram user ID for the allowlist
 - Pi installed and authenticated locally (`~/.pi/agent/auth.json` exists after a working Pi login)
 
-Install the npm package and run the guided setup:
+Clone the explicit fork branch, build locally, and run the guided setup:
 
 ```bash
-npm install -g @futurelab-studio/telepi
-telepi setup
-telepi status
+git clone --branch feat/pi-1.1.0 https://github.com/alexdavliatov/TelePi.git
+cd TelePi
+npm ci
+npm run build
+node dist/cli.js setup
+node dist/cli.js status
 ```
 
-`telepi setup` asks for your bot token, allowed Telegram user IDs, and default workspace. It installs the local service for your platform and the Pi `/handoff` extension.
+`node dist/cli.js setup` asks for your bot token, allowed Telegram user IDs, and default workspace. It installs the local service for your platform and the Pi `/handoff` extension, pointing at this checkout. Keep the checkout in place. Setup changes and starts the local service; do this only when you intend to deploy. In the remaining docs, `telepi <command>` is shorthand for `node /path/to/TelePi/dist/cli.js <command>` from this built fork, not an upstream global npm installation.
 
 **Success checkpoint:** open Telegram and send `/start` to your bot. You should see your workspace/session status and voice backend status. If not, jump to [Troubleshooting activation blockers](#troubleshooting-activation-blockers).
 
@@ -44,7 +49,8 @@ telepi status
 TelePi gives Telegram access to a coding agent, so it is designed to stay private by default:
 
 - **Telegram user allowlist:** only IDs in `TELEGRAM_ALLOWED_USER_IDS` can interact with the bot.
-- **Workspace-scoped execution:** Pi tools are created for the active workspace and re-scoped when you switch sessions.
+- **Workspace-scoped execution:** Pi tools are created for the active workspace and re-scoped when you switch sessions. This is not a filesystem sandbox.
+- **Headless workspace trust:** Configured and resumed workspaces are treated as trusted, including their project extensions and settings, with no new trust prompt. Only open workspaces/extensions you trust; extensions execute locally with the bot user's permissions.
 - **Local user service:** installed mode runs under your own macOS/Linux user account, not as a public server.
 - **No public bot access when configured correctly:** anyone else who discovers the bot is rejected unless their Telegram user ID is allowlisted.
 - **Docker support:** run TelePi in a non-root container with explicit read/write mounts if you want stronger filesystem isolation.
@@ -68,15 +74,16 @@ TelePi gives Telegram access to a coding agent, so it is designed to stay privat
 
 ## Full setup details
 
-The npm global install is the main path for TelePi on macOS (`launchd`) and Linux (`systemd --user`).
+Use the built `feat/pi-1.1.0` source checkout above on macOS (`launchd`) and Linux (`systemd --user`); no global npm installation is needed.
 
-1. Install TelePi globally:
+1. Build the fork after installing its locked dependencies:
    ```bash
-   npm install -g @futurelab-studio/telepi
+   npm ci
+   npm run build
    ```
-2. Run the installer using either flow:
+2. Run the built installer using either flow:
    ```bash
-   telepi setup
+   node dist/cli.js setup
    ```
    When run in a terminal, `telepi setup` prompts for the three setup values TelePi currently cares about:
    - `TELEGRAM_BOT_TOKEN`
@@ -87,7 +94,7 @@ The npm global install is the main path for TelePi on macOS (`launchd`) and Linu
 
    Or use the fast positional form:
    ```bash
-   telepi setup <bot_token> <userids> <workspace>
+   node dist/cli.js setup <bot_token> <userids> <workspace>
    ```
    where `<userids>` uses the same comma-separated format as the config file, for example `123456789,987654321`.
 
@@ -111,7 +118,7 @@ The npm global install is the main path for TelePi on macOS (`launchd`) and Linu
    - `OPENAI_API_KEY`, `SHERPA_ONNX_MODEL_DIR`, `PI_MODEL`, and `TOOL_VERBOSITY` are optional
 4. Verify the install:
    ```bash
-   telepi status
+   node dist/cli.js status
    ```
 5. Open Telegram and send `/start` to your bot.
 
@@ -145,11 +152,11 @@ Send `/start` and check the voice backend status. Local transcription needs `ffm
 
 ## Development from Source
 
-Use a source checkout when you want to hack on TelePi or run the latest unreleased code.
+Start with the explicit `feat/pi-1.1.0` clone in [Try it in 5 minutes](#try-it-in-5-minutes). For development without installing a service:
 
-1. Install dependencies:
+1. Install locked dependencies:
    ```bash
-   npm install
+   npm ci
    ```
 2. Copy the example environment file and fill it in:
    ```bash
@@ -171,14 +178,14 @@ Use a source checkout when you want to hack on TelePi or run the latest unreleas
    node dist/cli.js status
    ```
 
-If you are working from a built checkout or GitHub Release artifact instead of a global npm install, install runtime dependencies first — the `dist/` files are not self-contained:
+The `dist/` files are not self-contained. A checkout already built with dev dependencies can run with runtime dependencies only:
 
 ```bash
-npm install --omit=dev
-# or: npm ci --omit=dev
-node dist/cli.js setup
+npm ci --omit=dev
 node dist/cli.js start
 ```
+
+Do not omit dev dependencies before building; TypeScript is needed for `npm run build`.
 
 
 ## Telegram Commands
@@ -204,7 +211,9 @@ Sessions, inline keyboards, and `/retry` state are isolated per Telegram chat/to
 
 `/commands` now opens a mobile-friendly inline picker with pagination plus `All`, `TelePi`, and `Pi` filters. Tapping a TelePi entry runs the built-in command immediately, and tapping a Pi entry forwards the slash command into the active Pi session. Telegram-compatible discovered Pi commands (for example `/review` or `/compact`) are also synced into Telegram's native slash-command interface for the current chat. Commands that Telegram cannot represent, such as `/skill:browser-tools`, stay available through the picker and by manual typing.
 
-Any non-TelePi slash command that matches the active Pi session's discovered commands is forwarded into Pi unchanged. That means Telegram can now trigger file-based prompt templates (for example `/review`), skills (`/skill:browser-tools`), and compatible extension commands. Interactive extension commands can also open Telegram-native select/confirm/input dialogs while the command is running.
+Any non-TelePi slash command that matches the active Pi session's discovered commands is forwarded into Pi unchanged. That means Telegram can now trigger file-based prompt templates (for example `/review`), skills (`/skill:browser-tools`), and compatible extension commands. Interactive extension commands can also open Telegram-native select/confirm/input dialogs while the command is running. A valid reply resolves the pending interaction and the waiting handler continues; cancellation and `/abort` retain their existing behavior.
+
+`custom()` and `editor()` are unsupported. Arbitrary Gauntlet/XPowers terminal dashboards and custom question interfaces are outside this bridge; automated dialog tests do not certify those terminal UIs.
 
 ## External Prompt Inbox
 
@@ -365,15 +374,17 @@ Labeled entries are highlighted in `/tree` output and shown in `/branch` confirm
 
 ## Session Hand-off
 
-TelePi supports seamless bi-directional session hand-off between Pi CLI and Telegram. Both directions preserve the **full conversation context** — the JSONL session file is the single source of truth, and whichever side opens it gets the complete history, including any messages added by the other side.
+TelePi hands off persisted history only through the JSONL session file — not a running terminal stack, an in-flight run, or an already-open dialog. The receiving side opens the saved history and continues from its persisted branch context.
+
+Handoff is cooperative single-writer use: there is no cross-process session-file lock. Do not open independent CLI and TelePi writers simultaneously against the same session file. Finish or abort active work before switching; manual handoff also requires stopping the previous writer.
 
 ### CLI → Telegram (`/handoff`)
 
 You're working in Pi CLI on your laptop and want to continue from your phone:
 
 1. **In Pi CLI**, type `/handoff`
-2. The extension hands off your current session to TelePi — in direct mode it starts TelePi immediately, and in `launchd` mode it restarts the installed LaunchAgent with the handed-off session. The default `auto` behavior picks `launchd` after `telepi setup`, otherwise direct mode — then shuts down Pi CLI
-3. **Open Telegram** — TelePi is already running with your full conversation context. Just keep typing (or speak).
+2. The extension launches or restarts TelePi successfully before shutting down Pi CLI; a failed launch leaves CLI running. The default `auto` behavior reuses the configured `launchd`/`systemd --user` service after setup, otherwise direct mode. This ordering is cooperative, not a cross-process lock.
+3. **Open Telegram** — continue from the persisted history.
 
 **Extension installation**
 
@@ -387,7 +398,7 @@ ln -s "$(pwd)/extensions/telepi-handoff.ts" ~/.pi/agent/extensions/telepi-handof
 
 Pi auto-discovers it after symlinking (or run `/reload` in Pi).
 
-The extension supports three hand-off mode settings, controlled via shell environment variables:
+The extension supports these hand-off mode settings, controlled via shell environment variables:
 
 - `TELEPI_HANDOFF_MODE=auto` *(default)* — if `telepi setup` assets are present, reuse `launchd` on macOS or `systemd --user` on Linux; otherwise use direct mode
 - `TELEPI_HANDOFF_MODE=direct` — always start a fresh direct TelePi process; best for source-checkout development or when the installed service is unloaded
@@ -403,7 +414,7 @@ Direct mode starts a separate TelePi process. That is the natural default for so
 export TELEPI_DIR="/path/to/TelePi"
 ```
 
-If a global `telepi` command is available and `~/.config/telepi/config.env` exists, direct mode can also launch the installed CLI explicitly. If the installed config is missing, `/handoff` now falls back to `TELEPI_DIR` when that source checkout path is available.
+If a global `telepi` command is available and `~/.config/telepi/config.env` exists, direct mode prefers that installed CLI even when `TELEPI_DIR` is set. That global command may be upstream, not this fork. To hand off to this fork, use a service configured by this checkout's built setup, or ensure direct mode has no configured global CLI taking precedence. Without that installed target, `TELEPI_DIR` selects the source checkout.
 
 #### launchd mode (default after `telepi setup` on macOS)
 
@@ -462,7 +473,7 @@ You're on your phone and want to get back to your terminal:
    cd '/Users/you/myproject' && pi --session '/Users/you/.pi/agent/sessions/.../session.jsonl'
    ```
 3. On macOS and Linux desktops with `wl-copy`, `xclip`, or `xsel`, the command is **copied to your clipboard** automatically
-4. **In your terminal**, paste and run — Pi CLI opens with the full conversation, including everything from Telegram
+4. **In your terminal**, paste and run after disposal — Pi CLI opens the persisted conversation, including saved Telegram messages
 5. TelePi stays alive — send any message in Telegram to start a fresh session
 
 You can also resume with the shorthand:
@@ -476,7 +487,7 @@ cd /path/to/project && pi -c
 
 Without the extension, you can hand off manually:
 
-1. Note the session file path from Pi CLI (shown on startup)
+1. Note the session file path from Pi CLI (shown on startup), finish or abort active work, and close that CLI writer.
 2. Start TelePi with that session explicitly:
 
 ```bash
@@ -498,7 +509,7 @@ Both Pi CLI and TelePi use the same `SessionManager` from the Pi SDK to read/wri
 2. `buildSessionContext()` walks the entry tree from the current leaf to the root
 3. The full message history (including compaction summaries and branch context) is sent to the LLM
 
-This means hand-off is lossless — no context is dropped regardless of how many times you switch between CLI and Telegram.
+This preserves persisted conversation history (including compaction summaries and branch context), not process state or transient UI. Only one side should write the session at a time.
 
 ## Cross-Workspace Sessions
 
@@ -507,6 +518,10 @@ TelePi discovers sessions from **all** project workspaces stored under `~/.pi/ag
 - **`/sessions`** shows sessions from every project (OpenClawd, homepage, TelePi, etc.), grouped by workspace
 - **`/new`** shows a workspace picker when multiple workspaces are known, so you can start a new session in any project
 - **Switching sessions** automatically updates the workspace — coding tools are re-scoped to the correct project directory
+
+Reopening a session restores its saved workspace, settings, and extensions. Explicit `PI_MODEL` takes precedence over saved model selection. When unset, an available saved model is restored; otherwise TelePi reports an unavailable-model fallback naming the missing model and replacement. It does not recreate unavailable models or providers.
+
+Bash `shellPath` and `commandPrefix` are captured per session. If you change those settings after `/reload`, reopen the session to apply them; the guarded bash tool retains the session's captured configuration.
 
 Sessions are stored under `~/.pi/agent/sessions/--<encoded-workspace-path>--/`.
 
@@ -662,6 +677,8 @@ The detailed module map, testing layout, and remaining large hotspots are docume
 
 ## Development
 
+SDK 1.1.0 integration checks use synthetic offline SDK fixtures and mocked Telegram transport, without production credentials or LLM inference. No live Telegram end-to-end tests or deployment are claimed; live testing, installation, or service changes require separate authorization. These checks are not proof of custom terminal UI compatibility.
+
 ```bash
 npm install
 npm run dev            # Run with tsx (auto-loads .env)
@@ -669,31 +686,12 @@ npm run build          # TypeScript compilation
 npm run build:clean    # Clean dist/ and rebuild
 npm test               # Run tests
 npm run test:coverage  # Run tests with coverage report
-npm run package:release  # Create artifacts/telepi-vX.Y.Z.tar.gz + checksum
-npm run ci:release     # Test + clean build + package release artifact
 ```
 
 ## Release Automation
 
-GitHub Actions publishes npm and creates the GitHub Release automatically on tag pushes matching `v*.*.*`.
+This fork must not publish `@futurelab-studio/telepi` or create release tags. It delivers verified source on `feat/pi-1.1.0`; the default branch remains upstream until separately accepted. The retained package name is upstream identity, not a claim of npm ownership.
 
-Maintainer flow:
+Publishing belongs only to upstream `benedict2310/TelePi`. The complete release job in `.github/workflows/release.yml` is guarded by `github.repository == 'benedict2310/TelePi'`, so neither npm publication nor GitHub Release asset publication runs in this fork. The upstream tag trigger and Trusted Publishing mechanics are retained, not a fork release procedure.
 
-```bash
-npm version patch   # or minor / major
-git push origin main --follow-tags
-```
-
-The release workflow then:
-- verifies the pushed tag matches `package.json`
-- installs dependencies and runs release CI via `npx --yes npm@11.10.0`
-- publishes `@futurelab-studio/telepi` to npm
-- creates a GitHub Release with the packaged tarball and checksum
-
-Notes:
-- prerelease tags like `v0.2.0-beta.1` are published to npm with the `next` dist-tag and marked as GitHub prereleases
-- npm publishing uses Trusted Publishing from GitHub Actions; no `NPM_TOKEN` secret is required
-- the trusted publisher must be configured on npm for repo `benedict2310/TelePi` and workflow `.github/workflows/release.yml`
-- npm Trusted Publishing currently requires npm CLI `11.5.1+` and Node `22.14.0+`; TelePi keeps the runner's bundled npm unchanged and uses `npx --yes npm@11.10.0` for release steps because older npm versions can fail with misleading `E404 Not Found` publish errors even when OIDC is configured correctly
-- the workflow has been verified end-to-end with release `v0.2.2`
-- reusable setup details for this pattern live in `docs/npm-trusted-publishing.md`
+Upstream-only background: release CI uses `npx --yes npm@11.10.0` for Trusted Publishing without changing the runner's global npm; npm must trust the upstream repository and workflow. See [`docs/npm-trusted-publishing.md`](docs/npm-trusted-publishing.md) for the retained upstream playbook. Do not follow its tag-push/publishing flow in this fork.
